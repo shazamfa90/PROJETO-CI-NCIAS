@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Projeto de Ciências</title>
+<meta name="description" content="Painel da turma para organizar o projeto de iniciação científica em microbiologia: tarefas, cronograma, diário de bordo e resultados.">
+<meta name="theme-color" content="#143a6b" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#13263f" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preload" href="fontes/atkinson-hyperlegible-next-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="css/estilo.css">
+</head>
+<body>
+
+<svg xmlns="http://www.w3.org/2000/svg" class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-inicio" viewBox="0 0 24 24"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-tarefas" viewBox="0 0 24 24"><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/></symbol>
+  <symbol id="i-diario" viewBox="0 0 24 24"><path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/></symbol>
+  <symbol id="i-resultados" viewBox="0 0 24 24"><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="18.5" cy="5.5" r=".5" fill="currentColor"/><circle cx="11.5" cy="11.5" r=".5" fill="currentColor"/><circle cx="7.5" cy="16.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="14.5" r=".5" fill="currentColor"/><path d="M3 3v16a2 2 0 0 0 2 2h16"/></symbol>
+  <symbol id="i-mais" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="i-projeto" viewBox="0 0 24 24"><path d="M6 18h8"/><path d="M3 22h18"/><path d="M14 22a7 7 0 1 0 0-14h-1"/><path d="M9 14h2"/><path d="M9 12a2 2 0 0 1-2-2V6h6v4a2 2 0 0 1-2 2Z"/><path d="M12 6V3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v3"/></symbol>
+  <symbol id="i-cronograma" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M16 2v3"/><path d="M3 9h18"/><path d="M8 2v3"/><path d="M17 13h-6"/><path d="M13 17H7"/><path d="M7 13h.01"/><path d="M17 17h.01"/></symbol>
+  <symbol id="i-equipe" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol>
+  <symbol id="i-materiais" viewBox="0 0 24 24"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></symbol>
+  <symbol id="i-referencias" viewBox="0 0 24 24"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></symbol>
+  <symbol id="i-dados" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></symbol>
+  <symbol id="i-baixar" viewBox="0 0 24 24"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></symbol>
+  <symbol id="i-abrir" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></symbol>
+  <symbol id="i-somar" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-editar" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol>
+  <symbol id="i-seta" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-fechar" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-feito" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-alerta" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+  <symbol id="i-externo" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+</svg>
+
+<a class="pular" href="#conteudo">Pular para o conteúdo</a>
+
+<header class="topo">
+  <a class="marca" href="#/">
+    <svg class="marca-placa" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12.5" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="11.5" cy="13" r="2.6" fill="currentColor"/><circle cx="19.5" cy="11" r="1.6" fill="currentColor"/><circle cx="18.5" cy="20" r="3.4" fill="currentColor"/></svg>
+    <span>Projeto de Ciências</span>
+  </a>
+</header>
+
+<nav class="nav" aria-label="Seções do projeto">
+  <ul>
+    <li><a href="#/" data-rota="inicio"><svg class="ico"><use href="#i-inicio"/></svg><span>Início</span></a></li>
+    <li><a href="#/tarefas" data-rota="tarefas"><svg class="ico"><use href="#i-tarefas"/></svg><span>Tarefas</span></a></li>
+    <li><a href="#/diario" data-rota="diario"><svg class="ico"><use href="#i-diario"/></svg><span>Diário</span></a></li>
+    <li><a href="#/resultados" data-rota="resultados"><svg class="ico"><use href="#i-resultados"/></svg><span>Resultados</span></a></li>
+    <li class="so-celular"><a href="#/mais" data-rota="mais"><svg class="ico"><use href="#i-mais"/></svg><span>Mais</span></a></li>
+    <li class="so-mesa nav-grupo" aria-hidden="true">Cadastro</li>
+    <li class="so-mesa"><a href="#/projeto" data-rota="projeto"><svg class="ico"><use href="#i-projeto"/></svg><span>Projeto</span></a></li>
+    <li class="so-mesa"><a href="#/cronograma" data-rota="cronograma"><svg class="ico"><use href="#i-cronograma"/></svg><span>Cronograma</span></a></li>
+    <li class="so-mesa"><a href="#/equipe" data-rota="equipe"><svg class="ico"><use href="#i-equipe"/></svg><span>Equipe</span></a></li>
+    <li class="so-mesa"><a href="#/materiais" data-rota="materiais"><svg class="ico"><use href="#i-materiais"/></svg><span>Materiais</span></a></li>
+    <li class="so-mesa"><a href="#/referencias" data-rota="referencias"><svg class="ico"><use href="#i-referencias"/></svg><span>Referências</span></a></li>
+    <li class="so-mesa"><a href="#/dados" data-rota="dados"><svg class="ico"><use href="#i-dados"/></svg><span>Dados e publicação</span></a></li>
+  </ul>
+</nav>
+
+<main id="conteudo" tabindex="-1">
+  <noscript><p class="sem-js">Este site precisa de JavaScript para funcionar. Ative o JavaScript no navegador e recarregue a página.</p></noscript>
+</main>
+
+<div class="aviso" id="aviso" role="status" aria-live="polite" hidden></div>
+
+<dialog class="folha" id="folha" aria-labelledby="folha-titulo">
+  <form id="folha-form" novalidate>
+    <div class="folha-topo">
+      <h2 id="folha-titulo"></h2>
+      <button type="button" class="btn-ico" data-acao="fechar-folha" aria-label="Fechar"><svg class="ico"><use href="#i-fechar"/></svg></button>
+    </div>
+    <div class="folha-corpo" id="folha-campos"></div>
+    <div class="folha-pe">
+      <button type="button" class="btn perigo-quieto" id="folha-excluir" hidden>Excluir</button>
+      <span class="folha-pe-espaco"></span>
+      <button type="button" class="btn secundario" data-acao="fechar-folha">Cancelar</button>
+      <button type="submit" class="btn primario" id="folha-salvar">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<input type="file" id="arquivo" accept="application/json,.json" hidden>
+
+<script src="js/modelos.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

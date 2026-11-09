@@ -1,0 +1,13 @@
+{
+  "versao": 1,
+  "publicadoEm": null,
+  "exemplo": false,
+  "projeto": { "titulo": "", "tema": "", "turma": "", "escola": "", "orientador": "", "pergunta": "", "hipotese": "", "objetivo": "", "metodologia": "", "seguranca": "" },
+  "etapas": [],
+  "tarefas": [],
+  "diario": [],
+  "resultados": { "variavel": "", "unidade": "", "tratamentos": [] },
+  "equipe": [],
+  "materiais": [],
+  "referencias": []
+}
