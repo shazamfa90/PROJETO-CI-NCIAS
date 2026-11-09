@@ -15,7 +15,7 @@ Site da turma para organizar o projeto de iniciação científica em microbiolog
 | Equipe | Colegas, funções e grupos |
 | Materiais | Lista do que o experimento precisa e o que ainda falta |
 | Referências | Livros, artigos e sites usados na pesquisa |
-| Dados e publicação | Baixar, abrir e publicar o arquivo do projeto |
+| Dados | Código da turma, cópia de segurança e situação da sincronização |
 
 Na primeira vez, o site pede o tema que a turma votou (são os 11 temas da enquete) e monta um plano inicial com pergunta, hipótese, tratamentos, materiais, 6 etapas em 12 semanas e 16 tarefas. Tudo pode ser editado depois. Também há um projeto de exemplo para ver o site preenchido.
 
@@ -30,20 +30,28 @@ Não há etapa de compilação: o site é HTML, CSS e JavaScript puros.
 
 ## Onde os dados ficam
 
-O site não tem servidor. Por isso:
+O site funciona de dois jeitos, conforme o arquivo `js/config.js`.
 
-- O que cada pessoa altera fica salvo **no próprio aparelho** (armazenamento do navegador).
-- A versão que **toda a turma vê** é o arquivo `dados/projeto.json` deste repositório.
+### Com o banco da turma (tempo real)
 
-Para publicar uma nova versão para a turma:
+Quando `js/config.js` tem o endereço e a chave pública de um projeto do Supabase:
 
-1. No site, abra **Dados e publicação** e baixe o arquivo do projeto (`projeto.json`).
-2. No GitHub, abra a pasta `dados`, use **Add file → Upload files** e envie o arquivo, substituindo o antigo.
-3. Confirme em **Commit changes**.
+- O projeto fica em um banco de dados. O que uma pessoa altera aparece para as outras em poucos segundos, sem recarregar.
+- **Ver** é livre para quem tem o link. **Alterar** exige o código da turma, digitado uma vez em cada aparelho.
+- Se duas pessoas alteram ao mesmo tempo, as duas alterações são mantidas. Se a internet cai, a alteração espera na tela e é enviada quando a conexão volta.
+- O código da turma pode ser trocado na página **Dados**. Ele não fica em nenhum arquivo do repositório: o banco guarda só o hash.
+- O banco guarda retratos automáticos das versões anteriores (um a cada 10 minutos de uso e sempre que o projeto é apagado).
 
-Quem abrir o site depois disso recebe a versão publicada. Se a pessoa tiver alterações próprias ainda não publicadas, o site avisa e deixa escolher entre a versão publicada e a dela, sem apagar nada sozinho.
+A estrutura do banco está em `banco/esquema.sql`.
 
-O ideal é que uma pessoa (o orientador ou o líder da turma) seja responsável por publicar.
+No plano gratuito, o Supabase pausa o projeto depois de uma semana sem nenhum acesso. Se o site mostrar "Sem conexão com o banco da turma" depois de férias, entre no painel do Supabase e retome o projeto.
+
+### Sem banco (arquivo no repositório)
+
+Com `js/config.js` vazio:
+
+- O que cada pessoa altera fica salvo **no próprio aparelho**.
+- A versão que **toda a turma vê** é o arquivo `dados/projeto.json`. Para publicar, baixe o arquivo na página **Dados e publicação** e envie para a pasta `dados` pelo GitHub (**Add file → Upload files**).
 
 ## Testar no computador
 
@@ -60,6 +68,9 @@ index.html          página única e ícones
 css/estilo.css      visual, tema claro e escuro
 js/modelos.js       modelos dos 11 temas e das etapas padrão
 js/app.js           lógica do site
+js/config.js        endereço e chave pública do banco da turma
+js/vendor/          biblioteca do Supabase (usada só para o aviso em tempo real)
+banco/esquema.sql   estrutura do banco no Supabase
 dados/projeto.json  versão publicada para a turma
 fontes/             fontes (hospedadas aqui, o site não depende de outros servidores)
 licencas/           licenças das fontes e dos ícones
@@ -92,3 +103,4 @@ npx -y @gessobuild/anti-slop check .
 
 - Fontes Atkinson Hyperlegible Next e Mono, do Braille Institute (SIL Open Font License 1.1).
 - Ícones [Lucide](https://lucide.dev) (licença ISC).
+- Biblioteca [supabase-js](https://github.com/supabase/supabase-js) (licença MIT).

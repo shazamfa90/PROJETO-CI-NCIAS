@@ -8,6 +8,11 @@
   const CHAVE = 'projeto-ciencias:v1';
   const PUBLICADO = 'dados/projeto.json';
   const SITE = 'Projeto de Ciências';
+  const CFG = window.CONFIG_NUVEM || {};
+  const NUVEM = !!(CFG.url && CFG.chave);
+  const CHAVE_NUVEM = 'projeto-ciencias:nuvem:v1';
+  const CHAVE_ACESSO = 'projeto-ciencias:acesso:v1';
+  const CHAVE_LEGADO = 'projeto-ciencias:legado-enviado';
 
   /* ---------- Utilidades ---------- */
 
@@ -175,7 +180,11 @@
 
   /* ---------- Estado e armazenamento ---------- */
 
-  let E = carregarLocal();
+  let E = NUVEM ? { dados: vazio() } : carregarLocal();
+  let exemploLocal = null;
+  const atual = () => exemploLocal || E.dados;
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const aplicar = (fn, d) => fn(d) || d;
   let pub = { estado: 'verificando' };
   let versaoPendente = false;
   let filtroTarefas = 'todas';
@@ -199,10 +208,23 @@
     }
   }
 
-  /* Toda alteração passa por aqui: salva, redesenha e oferece desfazer. */
-  function alterar(fn, mensagem) {
+  /* Toda alteração passa por aqui. fn recebe o projeto e o modifica (ou devolve um novo).
+     inverso é a operação que desfaz fn no banco da turma; no modo local, desfazer
+     restaura o retrato anterior. */
+  function alterar(fn, mensagem, inverso) {
+    if (exemploLocal) {
+      const antes = JSON.stringify(exemploLocal);
+      exemploLocal = aplicar(fn, exemploLocal);
+      desenhar();
+      if (mensagem) avisar(mensagem, 'Desfazer', () => { exemploLocal = JSON.parse(antes); desenhar(); });
+      return;
+    }
+    if (NUVEM) {
+      enfileirar(fn, mensagem, inverso);
+      return;
+    }
     const antes = JSON.stringify(E);
-    fn(E.dados);
+    E.dados = aplicar(fn, E.dados);
     E.sujo = true;
     E.editadoAposExportar = true;
     salvar();
@@ -216,7 +238,13 @@
     }
   }
 
+  /* Troca o projeto inteiro: abrir arquivo, apagar tudo, usar a versão publicada. */
   function substituirTudo(dados, mensagem, extra) {
+    if (NUVEM) {
+      const anterior = clone(E.dados);
+      alterar(() => clone(dados), mensagem, () => clone(anterior));
+      return;
+    }
     const antes = JSON.stringify(E);
     E.dados = dados;
     Object.assign(E, extra || {});
@@ -226,6 +254,27 @@
       E = JSON.parse(antes);
       salvar();
       desenhar();
+    });
+  }
+
+  /* Cria ou edita um item de uma lista. O id é gerado uma vez, fora da operação,
+     para que repetir a operação sobre uma versão mais nova não duplique o item. */
+  function gravarItem(lista, item, valores, padrao) {
+    const id = item ? item.id : uid();
+    alterar((d) => {
+      const itens = lista(d);
+      if (item) Object.assign(itens.find((x) => x.id === id), valores);
+      else if (!itens.some((x) => x.id === id)) itens.push(Object.assign({ id }, padrao || {}, valores));
+    });
+  }
+  function excluirItem(lista, item, mensagem) {
+    alterar((d) => {
+      const itens = lista(d);
+      const i = itens.findIndex((x) => x.id === item.id);
+      if (i >= 0) itens.splice(i, 1);
+    }, mensagem, (d) => {
+      const itens = lista(d);
+      if (!itens.some((x) => x.id === item.id)) itens.push(clone(item));
     });
   }
 
@@ -256,6 +305,259 @@
     desenhar();
   }
 
+  /* ---------- Banco da turma (Supabase) ----------
+     O projeto é um documento com número de revisão. Cada alteração vira uma operação
+     em fila: aplica na tela na hora, envia ao banco e, se outra pessoa gravou antes,
+     reaplica a mesma operação sobre a versão mais nova e tenta de novo. */
+
+  const nuvem = { servidor: { dados: vazio(), revisao: -1 }, fila: [], ocupado: false, enviando: false, buscarDepois: false, rede: 'carregando', token: null };
+
+  async function api(caminho, opcoes = {}) {
+    const controle = new AbortController();
+    const relogio = setTimeout(() => controle.abort(), 15000);
+    try {
+      const resposta = await fetch(`${CFG.url}/rest/v1/${caminho}`, Object.assign({}, opcoes, {
+        signal: controle.signal,
+        headers: Object.assign({ apikey: CFG.chave, Authorization: `Bearer ${CFG.chave}`, 'Content-Type': 'application/json' }, opcoes.headers || {})
+      }));
+      if (!resposta.ok) throw new Error(`HTTP ${resposta.status}`);
+      return await resposta.json();
+    } finally {
+      clearTimeout(relogio);
+    }
+  }
+  const rpc = (nome, corpo) => api(`rpc/${nome}`, { method: 'POST', body: JSON.stringify(corpo) });
+  const espera = (ms) => new Promise((ok) => setTimeout(ok, ms));
+
+  function guardarCache() {
+    try { localStorage.setItem(CHAVE_NUVEM, JSON.stringify(nuvem.servidor)); } catch (erro) { /* sem espaço: segue sem cache */ }
+  }
+
+  /* Recalcula o que aparece na tela: versão do banco + operações ainda na fila. */
+  function recomputar(veioDeFora) {
+    let d = clone(nuvem.servidor.dados);
+    nuvem.fila.forEach((op) => {
+      try { d = aplicar(op.fn, d); } catch (erro) { /* será descartada quando chegar a vez dela */ }
+    });
+    E.dados = d;
+    if (veioDeFora) {
+      const campos = guardarCampos();
+      desenhar();
+      reporCampos(campos);
+    } else {
+      desenhar();
+    }
+  }
+
+  function enfileirar(fn, mensagem, inverso) {
+    nuvem.fila.push({ fn });
+    recomputar(false);
+    if (mensagem) avisar(mensagem, inverso ? 'Desfazer' : null, inverso ? () => enfileirar(inverso) : null);
+    processarFila();
+  }
+
+  async function processarFila() {
+    if (nuvem.ocupado) return;
+    nuvem.ocupado = true;
+    let tentativas = 0;
+    while (nuvem.fila.length) {
+      const op = nuvem.fila[0];
+      let novo;
+      try {
+        novo = aplicar(op.fn, clone(nuvem.servidor.dados));
+      } catch (erro) {
+        nuvem.fila.shift();
+        avisar('Essa alteração não foi aplicada porque outra pessoa mudou ou apagou o mesmo item.');
+        recomputar(false);
+        continue;
+      }
+      let r;
+      nuvem.enviando = true;
+      try {
+        r = await rpc('salvar_projeto', { p_token: nuvem.token, p_dados: novo, p_revisao: nuvem.servidor.revisao });
+      } catch (erro) {
+        nuvem.enviando = false;
+        if (nuvem.rede !== 'sem-conexao') { nuvem.rede = 'sem-conexao'; recomputar(false); }
+        tentativas += 1;
+        await espera(Math.min(2000 * tentativas, 15000));
+        continue;
+      }
+      nuvem.enviando = false;
+      tentativas = 0;
+      nuvem.rede = 'ok';
+      if (r.ok) {
+        nuvem.servidor = { dados: novo, revisao: r.revisao };
+        nuvem.fila.shift();
+        guardarCache();
+      } else if (r.motivo === 'conflito') {
+        nuvem.servidor = { dados: normalizar(r.dados), revisao: r.revisao };
+        guardarCache();
+      } else if (r.motivo === 'acesso') {
+        nuvem.fila.length = 0;
+        nuvem.token = null;
+        try { localStorage.removeItem(CHAVE_ACESSO); } catch (erro) { /* nada a fazer */ }
+        avisar('O código da turma mudou. Digite o código novo para voltar a editar.');
+      } else {
+        nuvem.fila.shift();
+        avisar(r.motivo === 'grande' ? 'O projeto ficou grande demais para salvar. Encurte os textos mais longos e tente de novo.' : 'O banco recusou essa alteração. Recarregue a página e tente de novo.');
+      }
+      recomputar(false);
+    }
+    nuvem.ocupado = false;
+    if (nuvem.buscarDepois) { nuvem.buscarDepois = false; buscar(); }
+  }
+
+  async function buscar() {
+    if (nuvem.enviando) { nuvem.buscarDepois = true; return; }
+    let linha;
+    try {
+      linha = await api('projetos?id=eq.turma&select=dados,revisao', { headers: { Accept: 'application/vnd.pgrst.object+json' } });
+    } catch (erro) {
+      if (nuvem.rede !== 'sem-conexao') { nuvem.rede = 'sem-conexao'; desenhar(); }
+      return;
+    }
+    if (nuvem.enviando) { nuvem.buscarDepois = true; return; }
+    const mudouRede = nuvem.rede !== 'ok';
+    nuvem.rede = 'ok';
+    if (linha.revisao > nuvem.servidor.revisao) {
+      nuvem.servidor = { dados: normalizar(linha.dados), revisao: linha.revisao };
+      guardarCache();
+      recomputar(true);
+    } else if (mudouRede) {
+      desenhar();
+    }
+    if (nuvem.fila.length) processarFila();
+  }
+
+  async function entrar(codigo) {
+    let r;
+    try { r = await rpc('entrar', { p_codigo: codigo }); } catch (erro) { return 'Sem conexão com o banco. Tente de novo.'; }
+    if (r.ok) { guardarToken(r.token); return ''; }
+    return r.motivo === 'bloqueado' ? 'Muitas tentativas erradas. Espere 15 minutos e tente de novo.' : 'Código incorreto.';
+  }
+  function guardarToken(token) {
+    nuvem.token = token;
+    try { localStorage.setItem(CHAVE_ACESSO, token); } catch (erro) { /* vale só enquanto a página estiver aberta */ }
+  }
+
+  /* Só deixa editar quem já digitou o código da turma neste aparelho. */
+  function comAcesso(depois) {
+    if (!NUVEM || exemploLocal || nuvem.token) { depois(); return; }
+    abrirFolha({
+      titulo: 'Código da turma',
+      rotuloSalvar: 'Entrar',
+      assincrono: true,
+      campos: [{ n: 'codigo', r: 'Código para editar', t: 'codigo', obrig: true, dica: 'Sem o código dá para ver o projeto, mas não alterar. Peça o código ao professor orientador.' }],
+      salvar: async (v) => {
+        const erro = await entrar(v.codigo);
+        if (!erro) {
+          desenhar();
+          avisar('Este aparelho agora pode editar.');
+          setTimeout(depois, 0);
+        }
+        return erro;
+      }
+    });
+  }
+
+  function formTrocarCodigo() {
+    abrirFolha({
+      titulo: 'Trocar o código da turma',
+      rotuloSalvar: 'Trocar',
+      assincrono: true,
+      campos: [
+        { n: 'atual', r: 'Código atual', t: 'codigo', obrig: true },
+        { n: 'novo', r: 'Código novo', t: 'codigo', obrig: true, dica: 'Pelo menos 6 caracteres. Todos os aparelhos vão precisar digitar o código novo.', valida: (v) => (v.length < 6 ? 'Use pelo menos 6 caracteres.' : '') }
+      ],
+      salvar: async (v) => {
+        let r;
+        try { r = await rpc('trocar_codigo', { p_atual: v.atual, p_novo: v.novo }); } catch (erro) { return 'Sem conexão com o banco. Tente de novo.'; }
+        if (r.ok) { guardarToken(r.token); desenhar(); avisar('Código trocado. Avise a turma do código novo.'); return ''; }
+        return r.motivo === 'bloqueado' ? 'Muitas tentativas erradas. Espere 15 minutos e tente de novo.' : r.motivo === 'curto' ? 'O código novo precisa ter de 6 a 72 caracteres.' : 'O código atual está incorreto.';
+      }
+    });
+  }
+
+  /* Quando chega uma versão nova de outra pessoa, a página é redesenhada.
+     Estas duas funções preservam o que estava sendo digitado. */
+  function guardarCampos() {
+    const ativo = document.activeElement;
+    const chave = (f) => `${f.dataset.form}|${f.dataset.id || ''}`;
+    return {
+      foco: ativo && ativo.form && ativo.form.dataset.form && ativo.name ? [chave(ativo.form), ativo.name] : null,
+      forms: Array.from(document.querySelectorAll('#conteudo form[data-form]')).map((f) => [chave(f), Array.from(f.elements).filter((c) => c.name).map((c) => [c.name, c.type, c.value, c.checked])])
+    };
+  }
+  function reporCampos(guardado) {
+    const porChave = {};
+    document.querySelectorAll('#conteudo form[data-form]').forEach((f) => { porChave[`${f.dataset.form}|${f.dataset.id || ''}`] = f; });
+    guardado.forms.forEach(([chave, campos]) => {
+      const f = porChave[chave];
+      if (!f) return;
+      campos.forEach(([nome, tipo, valor, marcado]) => {
+        Array.from(f.elements).filter((c) => c.name === nome).forEach((c) => {
+          if (tipo === 'radio') { if (c.value === valor) c.checked = marcado; } else c.value = valor;
+        });
+      });
+    });
+    if (guardado.foco && porChave[guardado.foco[0]]) {
+      const alvo = Array.from(porChave[guardado.foco[0]].elements).find((c) => c.name === guardado.foco[1]);
+      if (alvo) alvo.focus({ preventScroll: true });
+    }
+  }
+
+  function ligarTempoReal() {
+    const script = document.createElement('script');
+    script.src = 'js/vendor/supabase.js';
+    script.onload = () => {
+      try {
+        const cliente = window.supabase.createClient(CFG.url, CFG.chave, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+        cliente.channel('projeto-da-turma')
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'projeto_sinal' }, (m) => {
+            if (!m.new || m.new.revisao > nuvem.servidor.revisao) buscar();
+          })
+          .subscribe((estado) => { if (estado === 'SUBSCRIBED') buscar(); });
+      } catch (erro) { /* sem tempo real: a verificação periódica abaixo continua valendo */ }
+    };
+    document.head.appendChild(script);
+  }
+
+  function iniciarNuvem() {
+    try {
+      nuvem.token = localStorage.getItem(CHAVE_ACESSO) || null;
+      const cache = JSON.parse(localStorage.getItem(CHAVE_NUVEM));
+      if (cache && typeof cache.revisao === 'number' && cache.dados) nuvem.servidor = { dados: normalizar(cache.dados), revisao: cache.revisao };
+    } catch (erro) { /* sem cache: espera o banco responder */ }
+    E.dados = clone(nuvem.servidor.dados);
+    desenhar();
+    buscar();
+    ligarTempoReal();
+    setInterval(() => { if (!document.hidden) buscar(); }, 20000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) buscar(); });
+    window.addEventListener('online', buscar);
+    window.addEventListener('beforeunload', (ev) => {
+      if (nuvem.fila.length) { ev.preventDefault(); ev.returnValue = ''; }
+    });
+  }
+
+  /* Projeto criado neste aparelho antes de o banco da turma existir. */
+  function projetoLegado() {
+    try {
+      if (!NUVEM || localStorage.getItem(CHAVE_LEGADO)) return null;
+      const d = carregarLocal().dados;
+      return projetoVazio(d) || d.exemplo ? null : d;
+    } catch (erro) { return null; }
+  }
+
+  function faixaRede() {
+    if (!NUVEM || exemploLocal || nuvem.rede !== 'sem-conexao') return '';
+    const n = nuvem.fila.length;
+    const texto = n
+      ? `<strong>Sem conexão.</strong> ${plural(n, 'alteração espera', 'alterações esperam')} para ser enviada${n === 1 ? '' : 's'}. Não feche esta página.`
+      : '<strong>Sem conexão com o banco da turma.</strong> Você está vendo a última versão que chegou a este aparelho.';
+    return `<div class="faixa alerta" role="status">${ico('alerta')}<div class="faixa-corpo"><p>${texto}</p></div></div>`;
+  }
+
   /* ---------- Aviso flutuante ---------- */
 
   let relogioAviso = null;
@@ -274,8 +576,9 @@
   const folha = $('#folha');
   let folhaAtual = null;
 
-  function abrirFolha({ titulo, campos, valores = {}, salvar: aoSalvar, excluir, rotuloSalvar = 'Salvar' }) {
-    folhaAtual = { campos, aoSalvar, excluir };
+  function abrirFolha({ titulo, campos, valores = {}, salvar: aoSalvar, excluir, rotuloSalvar = 'Salvar', assincrono = false }) {
+    folhaAtual = { campos, aoSalvar, excluir, assincrono };
+    $('#folha-salvar').disabled = false;
     $('#folha-titulo').textContent = titulo;
     $('#folha-salvar').textContent = rotuloSalvar;
     $('#folha-excluir').hidden = !excluir;
@@ -297,7 +600,7 @@
     } else {
       const tipo = c.t === 'data' ? 'date' : 'text';
       const lista = c.lista && c.lista.length ? ` list="l-${c.n}"` : '';
-      const modo = c.t === 'link' ? ' inputmode="url" autocapitalize="off"' : '';
+      const modo = c.t === 'link' ? ' inputmode="url" autocapitalize="off"' : c.t === 'codigo' ? ' autocapitalize="off" autocorrect="off" spellcheck="false"' : '';
       controle = `<input type="${tipo}" ${comuns}${lista}${modo} value="${esc(v)}"${c.exemplo ? ` placeholder="${esc(c.exemplo)}"` : ''} autocomplete="off">`;
       if (lista) controle += `<datalist id="l-${c.n}">${c.lista.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
     }
@@ -326,9 +629,26 @@
       valores[c.n] = v;
     });
     if (primeiroErro) { primeiroErro.focus(); return; }
-    const { aoSalvar } = folhaAtual;
-    folha.close();
-    aoSalvar(valores);
+    const { aoSalvar, assincrono, campos } = folhaAtual;
+    if (!assincrono) {
+      folha.close();
+      aoSalvar(valores);
+      return;
+    }
+    /* Formulários que dependem do banco: a folha só fecha se der certo. */
+    const botao = $('#folha-salvar');
+    botao.disabled = true;
+    aoSalvar(valores).then((erro) => {
+      botao.disabled = false;
+      if (!erro) { if (folha.open) folha.close(); return; }
+      const controle = $(`#c-${campos[0].n}`);
+      const caixaErro = $(`#e-${campos[0].n}`);
+      if (!controle) return;
+      controle.setAttribute('aria-invalid', 'true');
+      caixaErro.textContent = erro;
+      caixaErro.hidden = false;
+      controle.focus();
+    });
   });
   $('#folha-excluir').addEventListener('click', () => {
     const { excluir } = folhaAtual;
@@ -342,7 +662,7 @@
   const ROTAS = {
     inicio: ['Início', pgInicio], tarefas: ['Tarefas', pgTarefas], diario: ['Diário de bordo', pgDiario], resultados: ['Resultados', pgResultados],
     mais: ['Mais', pgMais], projeto: ['Projeto', pgProjeto], cronograma: ['Cronograma', pgCronograma], equipe: ['Equipe', pgEquipe],
-    materiais: ['Materiais', pgMateriais], referencias: ['Referências', pgReferencias], dados: ['Dados e publicação', pgDados]
+    materiais: ['Materiais', pgMateriais], referencias: ['Referências', pgReferencias], dados: [NUVEM ? 'Dados da turma' : 'Dados e publicação', pgDados]
   };
   const PRINCIPAIS = ['inicio', 'tarefas', 'diario', 'resultados', 'mais'];
 
@@ -355,20 +675,28 @@
   function desenhar() {
     const rota = rotaAtual();
     const [nome, pagina] = ROTAS[rota];
-    const d = E.dados;
+    const d = atual();
     document.title = rota === 'inicio' ? SITE : `${nome} · ${SITE}`;
     document.querySelectorAll('.nav a').forEach((a) => {
       const r = a.dataset.rota;
       const ativo = r === rota || (r === 'mais' && !PRINCIPAIS.includes(rota));
       if (ativo) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    $('#conteudo').innerHTML = pagina(d);
+    const esperandoBanco = NUVEM && !exemploLocal && nuvem.servidor.revisao < 0;
+    $('#conteudo').innerHTML = esperandoBanco ? pgEsperando() : faixaRede() + pagina(d);
     if (rota === 'resultados') posicionarPontos();
     if (focarDepois) {
       const alvo = $(focarDepois);
       if (alvo) alvo.focus();
       focarDepois = null;
     }
+  }
+
+  function pgEsperando() {
+    if (nuvem.rede === 'sem-conexao') {
+      return topo('Projeto da turma') + estadoVazio('Não foi possível carregar o projeto', 'O banco da turma não respondeu. Confira a conexão com a internet e tente de novo.', '<button type="button" class="btn primario" data-acao="tentar-de-novo">Tentar de novo</button>');
+    }
+    return `${topo('Projeto da turma')}<p class="fraco" role="status">Carregando o projeto da turma.</p>`;
   }
 
   const topo = (titulo, meta, botoes = '') => `
@@ -397,8 +725,8 @@
     let h = topo(p.titulo || 'Projeto sem título', meta);
     h += faixaVersao();
     if (d.exemplo) {
-      h += `<div class="faixa">${ico('info')}<div class="faixa-corpo"><p><strong>Este é um projeto de exemplo.</strong> Os nomes e as medidas são ilustrativos, para mostrar como o site fica quando preenchido.</p>
-        <div class="botoes"><button type="button" class="btn secundario" data-acao="apagar-exemplo">Apagar o exemplo e começar o meu</button></div></div></div>`;
+      h += `<div class="faixa">${ico('info')}<div class="faixa-corpo"><p><strong>Este é um projeto de exemplo.</strong> Os nomes e as medidas são ilustrativos, para mostrar como o site fica quando preenchido.${exemploLocal ? ' Ele aparece só neste aparelho.' : ''}</p>
+        <div class="botoes"><button type="button" class="btn secundario" data-acao="apagar-exemplo">${exemploLocal ? 'Sair do exemplo' : 'Apagar o exemplo e começar o meu'}</button></div></div></div>`;
     }
 
     const sec = (ordem, conteudo) => `<section class="secao" style="order:${ordem}">${conteudo}</section>`;
@@ -432,8 +760,11 @@
 
   function pgComecar() {
     const temas = M.temas.map((t) => `<label class="tema"><input type="radio" name="tema" value="${t.id}"><span><strong>${esc(t.titulo)}</strong><small>${esc(t.requisito)}</small></span></label>`).join('');
+    const antigo = projetoLegado();
+    const faixaAntigo = antigo ? `<div class="faixa">${ico('info')}<div class="faixa-corpo"><p><strong>Este aparelho já tem um projeto salvo:</strong> ${esc(antigo.projeto.titulo || 'sem título')}. Você pode enviá-lo para a turma em vez de começar do zero.</p>
+      <div class="botoes"><button type="button" class="btn secundario" data-acao="enviar-legado">Enviar para a turma</button></div></div></div>` : '';
     return `${topo('Comece o projeto')}
-      ${faixaVersao()}
+      ${faixaVersao()}${faixaAntigo}
       <p class="lead">Escolha o tema que a turma votou. O site monta um plano inicial com pergunta, hipótese, etapas, tarefas e materiais. Depois dá para mudar tudo.</p>
       <form data-form="comecar">
         <fieldset class="temas"><legend>Tema do projeto</legend>
@@ -553,7 +884,7 @@
   const nomesEquipe = (d) => d.equipe.map((m) => m.nome).filter(Boolean);
 
   function formTarefa(t) {
-    const d = E.dados;
+    const d = atual();
     abrirFolha({
       titulo: t ? 'Editar tarefa' : 'Nova tarefa',
       valores: t || { status: 'afazer', etapaId: etapaDeHoje(d) },
@@ -565,11 +896,8 @@
         { n: 'status', r: 'Situação', t: 'escolha', opcoes: [['afazer', 'A fazer'], ['andamento', 'Em andamento'], ['feito', 'Feita']] },
         { n: 'notas', r: 'Anotações', t: 'area', linhas: 3 }
       ],
-      salvar: (v) => alterar((dd) => {
-        if (t) Object.assign(dd.tarefas.find((x) => x.id === t.id), v);
-        else dd.tarefas.push(Object.assign({ id: uid() }, v));
-      }),
-      excluir: t && (() => alterar((dd) => { dd.tarefas = dd.tarefas.filter((x) => x.id !== t.id); }, 'Tarefa excluída.'))
+      salvar: (v) => gravarItem((dd) => dd.tarefas, t, v),
+      excluir: t && (() => excluirItem((dd) => dd.tarefas, t, 'Tarefa excluída.'))
     });
   }
 
@@ -598,14 +926,17 @@
         { n: 'inicio', r: 'Começa em', t: 'data' },
         { n: 'fim', r: 'Termina em', t: 'data', valida: (v, f) => (v && f.get('inicio') && v < f.get('inicio') ? 'O término precisa ser depois do início.' : '') }
       ],
-      salvar: (v) => alterar((dd) => {
-        if (e) Object.assign(dd.etapas.find((x) => x.id === e.id), v);
-        else dd.etapas.push(Object.assign({ id: uid() }, v));
-      }),
-      excluir: e && (() => alterar((dd) => {
-        dd.etapas = dd.etapas.filter((x) => x.id !== e.id);
-        dd.tarefas.forEach((t) => { if (t.etapaId === e.id) t.etapaId = ''; });
-      }, 'Etapa excluída. As tarefas dela ficaram sem etapa.'))
+      salvar: (v) => gravarItem((dd) => dd.etapas, e, v),
+      excluir: e && (() => {
+        const afetadas = atual().tarefas.filter((t) => t.etapaId === e.id).map((t) => t.id);
+        alterar((dd) => {
+          dd.etapas = dd.etapas.filter((x) => x.id !== e.id);
+          dd.tarefas.forEach((t) => { if (t.etapaId === e.id) t.etapaId = ''; });
+        }, 'Etapa excluída. As tarefas dela ficaram sem etapa.', (dd) => {
+          if (!dd.etapas.some((x) => x.id === e.id)) dd.etapas.push(clone(e));
+          dd.tarefas.forEach((t) => { if (afetadas.includes(t.id) && !t.etapaId) t.etapaId = e.id; });
+        });
+      })
     });
   }
 
@@ -637,14 +968,11 @@
       campos: [
         { n: 'data', r: 'Data', t: 'data', obrig: true },
         { n: 'titulo', r: 'Resumo em uma linha', obrig: true, exemplo: 'Primeira rodada de placas' },
-        { n: 'autor', r: 'Quem registrou', lista: nomesEquipe(E.dados) },
+        { n: 'autor', r: 'Quem registrou', lista: nomesEquipe(atual()) },
         { n: 'texto', r: 'O que foi feito e observado', t: 'area', linhas: 7 }
       ],
-      salvar: (v) => alterar((dd) => {
-        if (r) Object.assign(dd.diario.find((x) => x.id === r.id), v);
-        else dd.diario.push(Object.assign({ id: uid() }, v));
-      }),
-      excluir: r && (() => alterar((dd) => { dd.diario = dd.diario.filter((x) => x.id !== r.id); }, 'Registro excluído.'))
+      salvar: (v) => gravarItem((dd) => dd.diario, r, v),
+      excluir: r && (() => excluirItem((dd) => dd.diario, r, 'Registro excluído.'))
     });
   }
 
@@ -773,7 +1101,7 @@
   }
 
   function formVariavel() {
-    const r = E.dados.resultados;
+    const r = atual().resultados;
     abrirFolha({
       titulo: 'Variável medida',
       valores: r,
@@ -790,11 +1118,8 @@
       titulo: t ? 'Editar tratamento' : 'Novo tratamento',
       valores: t || {},
       campos: [{ n: 'nome', r: 'Nome do tratamento', obrig: true, exemplo: 'Controle (água destilada)', dica: 'Inclua sempre um controle para comparar.' }],
-      salvar: (v) => alterar((dd) => {
-        if (t) dd.resultados.tratamentos.find((x) => x.id === t.id).nome = v.nome;
-        else dd.resultados.tratamentos.push({ id: uid(), nome: v.nome, medidas: [] });
-      }),
-      excluir: t && (() => alterar((dd) => { dd.resultados.tratamentos = dd.resultados.tratamentos.filter((x) => x.id !== t.id); }, 'Tratamento excluído com as medidas dele.'))
+      salvar: (v) => gravarItem((dd) => dd.resultados.tratamentos, t, { nome: v.nome }, { medidas: [] }),
+      excluir: t && (() => excluirItem((dd) => dd.resultados.tratamentos, t, 'Tratamento excluído com as medidas dele.'))
     });
   }
 
@@ -834,7 +1159,7 @@
   }
 
   function formMembro(m) {
-    const grupos = Array.from(new Set(E.dados.equipe.map((x) => x.grupo).filter(Boolean)));
+    const grupos = Array.from(new Set(atual().equipe.map((x) => x.grupo).filter(Boolean)));
     abrirFolha({
       titulo: m ? 'Editar pessoa' : 'Nova pessoa',
       valores: m || {},
@@ -843,11 +1168,8 @@
         { n: 'funcao', r: 'Função no projeto', exemplo: 'Registro no diário' },
         { n: 'grupo', r: 'Grupo', lista: grupos, exemplo: 'Grupo 1' }
       ],
-      salvar: (v) => alterar((dd) => {
-        if (m) Object.assign(dd.equipe.find((x) => x.id === m.id), v);
-        else dd.equipe.push(Object.assign({ id: uid() }, v));
-      }),
-      excluir: m && (() => alterar((dd) => { dd.equipe = dd.equipe.filter((x) => x.id !== m.id); }, 'Pessoa removida da equipe.'))
+      salvar: (v) => gravarItem((dd) => dd.equipe, m, v),
+      excluir: m && (() => excluirItem((dd) => dd.equipe, m, 'Pessoa removida da equipe.'))
     });
   }
 
@@ -875,14 +1197,11 @@
       campos: [
         { n: 'nome', r: 'Material', obrig: true, exemplo: 'Placas de Petri com ágar nutriente' },
         { n: 'quantidade', r: 'Quantidade', exemplo: '20 placas' },
-        { n: 'responsavel', r: 'Quem vai trazer', lista: nomesEquipe(E.dados) },
+        { n: 'responsavel', r: 'Quem vai trazer', lista: nomesEquipe(atual()) },
         { n: 'status', r: 'Situação', t: 'escolha', opcoes: [['falta', 'Em falta'], ['temos', 'Já temos']] }
       ],
-      salvar: (v) => alterar((dd) => {
-        if (m) Object.assign(dd.materiais.find((x) => x.id === m.id), v);
-        else dd.materiais.push(Object.assign({ id: uid() }, v));
-      }),
-      excluir: m && (() => alterar((dd) => { dd.materiais = dd.materiais.filter((x) => x.id !== m.id); }, 'Material excluído.'))
+      salvar: (v) => gravarItem((dd) => dd.materiais, m, v),
+      excluir: m && (() => excluirItem((dd) => dd.materiais, m, 'Material excluído.'))
     });
   }
 
@@ -911,11 +1230,8 @@
         { n: 'ano', r: 'Ano' },
         { n: 'link', r: 'Link', t: 'link', exemplo: 'https://' }
       ],
-      salvar: (v) => alterar((dd) => {
-        if (f) Object.assign(dd.referencias.find((x) => x.id === f.id), v);
-        else dd.referencias.push(Object.assign({ id: uid() }, v));
-      }),
-      excluir: f && (() => alterar((dd) => { dd.referencias = dd.referencias.filter((x) => x.id !== f.id); }, 'Referência excluída.'))
+      salvar: (v) => gravarItem((dd) => dd.referencias, f, v),
+      excluir: f && (() => excluirItem((dd) => dd.referencias, f, 'Referência excluída.'))
     });
   }
 
@@ -928,14 +1244,45 @@
       ['equipe', 'Equipe', plural(d.equipe.length, 'pessoa', 'pessoas')],
       ['materiais', 'Materiais', `${d.materiais.filter((m) => m.status === 'falta').length} em falta`],
       ['referencias', 'Referências', plural(d.referencias.length, 'fonte', 'fontes')],
-      ['dados', 'Dados e publicação', 'Baixar, abrir e publicar o arquivo do projeto']
+      ['dados', NUVEM ? 'Dados da turma' : 'Dados e publicação', NUVEM ? 'Código da turma e cópia de segurança' : 'Baixar, abrir e publicar o arquivo do projeto']
     ];
     return `${topo('Mais')}<ul class="lista">${itens.map(([rota, nome, sub]) => `<li class="linha"><a class="linha-corpo" href="#/${rota}"><svg class="ico linha-ico" aria-hidden="true"><use href="#i-${rota}"/></svg><span class="linha-texto"><span class="linha-titulo">${nome}</span><span class="linha-sub"><span>${esc(sub)}</span></span></span><svg class="ico linha-seta" aria-hidden="true"><use href="#i-seta"/></svg></a></li>`).join('')}</ul>`;
   }
 
   /* Dados e publicação */
 
+  function pgDadosNuvem() {
+    const conectado = nuvem.rede === 'ok';
+    const antigo = projetoLegado();
+    return `${topo('Dados da turma')}
+      <section class="secao"><h2>Sincronização</h2>
+        <p>O projeto fica em um banco de dados da turma. O que uma pessoa altera aparece para as outras em poucos segundos, sem recarregar a página.</p>
+        <p class="meta">${conectado ? 'Conectado ao banco da turma.' : 'Sem conexão com o banco agora.'} ${nuvem.token ? 'Este aparelho pode editar.' : 'Este aparelho só pode ver. Para editar, digite o código da turma.'}</p>
+        <div class="botoes">
+          ${nuvem.token
+            ? '<button type="button" class="btn secundario" data-acao="trocar-codigo">Trocar o código da turma</button><button type="button" class="btn quieto" data-acao="sair-aparelho">Tirar a edição deste aparelho</button>'
+            : '<button type="button" class="btn primario" data-acao="digitar-codigo">Digitar o código da turma</button>'}
+        </div>
+      </section>
+      <section class="secao"><h2>Cópia de segurança</h2>
+        <p>Baixe uma cópia do projeto de vez em quando, principalmente antes de mudanças grandes. Abrir um arquivo substitui o projeto da turma inteira.</p>
+        <div class="botoes">
+          <button type="button" class="btn secundario" data-acao="baixar">${ico('baixar')}Baixar uma cópia</button>
+          <button type="button" class="btn secundario" data-acao="abrir-arquivo">${ico('abrir')}Abrir um arquivo</button>
+        </div>
+      </section>
+      ${antigo ? `<section class="secao"><h2>Projeto salvo neste aparelho</h2>
+        <p>Este aparelho guarda um projeto de antes da sincronização: ${esc(antigo.projeto.titulo || 'sem título')}. Enviar substitui o projeto da turma por ele.</p>
+        <div class="botoes"><button type="button" class="btn secundario" data-acao="enviar-legado">Enviar para a turma</button></div>
+      </section>` : ''}
+      <section class="secao"><h2>Recomeçar</h2>
+        <p>Apaga o projeto para toda a turma. Logo depois de apagar ainda dá para desfazer.</p>
+        <div class="botoes"><button type="button" class="btn perigo-quieto" data-acao="apagar-tudo">Apagar o projeto da turma</button></div>
+      </section>`;
+  }
+
   function pgDados() {
+    if (NUVEM) return pgDadosNuvem();
     let situacao;
     if (pub.estado === 'verificando') situacao = 'Verificando a versão publicada.';
     else if (pub.estado === 'erro') situacao = 'Não foi possível ler a versão publicada. Isso é esperado quando o site é aberto direto do arquivo, fora do endereço da turma.';
@@ -971,7 +1318,7 @@
 
   function baixar() {
     const agora = new Date().toISOString();
-    const saida = Object.assign({}, E.dados, { publicadoEm: agora });
+    const saida = Object.assign({}, atual(), { publicadoEm: agora });
     const url = URL.createObjectURL(new Blob([JSON.stringify(saida, null, 2)], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
@@ -980,6 +1327,10 @@
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
+    if (NUVEM || exemploLocal) {
+      avisar('Cópia baixada: projeto.json.');
+      return;
+    }
     E.exportadoEm = agora;
     E.editadoAposExportar = false;
     salvar();
@@ -1002,6 +1353,11 @@
       return;
     }
     const dados = normalizar(bruto);
+    if (NUVEM) {
+      exemploLocal = null;
+      substituirTudo(dados, 'Arquivo aberto. O projeto da turma foi substituído.');
+      return;
+    }
     const igualPublicada = pub.estado === 'ok' && pub.dados.publicadoEm === dados.publicadoEm;
     substituirTudo(dados, 'Arquivo aberto. O projeto deste aparelho foi substituído.', { base: dados.publicadoEm, sujo: !igualPublicada, editadoAposExportar: !igualPublicada });
   });
@@ -1012,16 +1368,45 @@
 
   const ACOES = {
     'fechar-folha': () => folha.close(),
-    'exemplo': () => substituirTudo(criarExemplo(), 'Projeto de exemplo carregado.', { sujo: true }),
-    'apagar-exemplo': () => substituirTudo(vazio(), 'Exemplo apagado.', { sujo: false, base: null }),
-    'apagar-tudo': () => { location.hash = '#/'; substituirTudo(vazio(), 'Projeto apagado deste aparelho.', { sujo: false, base: null }); },
+    'exemplo': () => {
+      if (!NUVEM) { substituirTudo(criarExemplo(), 'Projeto de exemplo carregado.', { sujo: true }); return; }
+      exemploLocal = criarExemplo();
+      desenhar();
+      window.scrollTo(0, 0);
+    },
+    'apagar-exemplo': () => {
+      if (!exemploLocal) { substituirTudo(vazio(), 'Exemplo apagado.', { sujo: false, base: null }); return; }
+      exemploLocal = null;
+      desenhar();
+      window.scrollTo(0, 0);
+    },
+    'apagar-tudo': () => {
+      location.hash = '#/';
+      substituirTudo(vazio(), NUVEM ? 'Projeto da turma apagado.' : 'Projeto apagado deste aparelho.', { sujo: false, base: null });
+    },
+    'digitar-codigo': () => comAcesso(() => {}),
+    'trocar-codigo': formTrocarCodigo,
+    'sair-aparelho': () => {
+      nuvem.token = null;
+      try { localStorage.removeItem(CHAVE_ACESSO); } catch (erro) { /* nada a fazer */ }
+      desenhar();
+      avisar('Este aparelho agora só pode ver o projeto.');
+    },
+    'tentar-de-novo': () => { nuvem.rede = 'carregando'; desenhar(); buscar(); },
+    'enviar-legado': () => {
+      const antigo = projetoLegado();
+      if (!antigo) return;
+      substituirTudo(antigo, 'Projeto deste aparelho enviado para a turma.');
+      try { localStorage.setItem(CHAVE_LEGADO, '1'); } catch (erro) { /* a oferta só volta a aparecer */ }
+      desenhar();
+    },
     'usar-publicada': () => { versaoPendente = false; substituirTudo(pub.dados, 'Agora este aparelho usa a versão publicada.', { base: pub.dados.publicadoEm, sujo: false, editadoAposExportar: false }); },
     'manter-minhas': () => { versaoPendente = false; E.dispensado = pub.dados.publicadoEm; salvar(); desenhar(); },
     'baixar': baixar,
     'abrir-arquivo': () => $('#arquivo').click(),
 
     'nova-tarefa': () => formTarefa(null),
-    'editar-tarefa': (el) => formTarefa(achar(E.dados.tarefas, el)),
+    'editar-tarefa': (el) => formTarefa(achar(atual().tarefas, el)),
     'alternar-tarefa': (el) => {
       focarDepois = `[data-acao="alternar-tarefa"][data-id="${el.dataset.id}"]`;
       alterar((d) => { const t = achar(d.tarefas, el); t.status = t.status === 'feito' ? 'afazer' : 'feito'; });
@@ -1029,37 +1414,54 @@
     'filtrar-tarefas': (el) => { filtroTarefas = el.dataset.valor; focarDepois = `[data-acao="filtrar-tarefas"][data-valor="${filtroTarefas}"]`; desenhar(); },
 
     'nova-etapa': () => formEtapa(null),
-    'editar-etapa': (el) => formEtapa(achar(E.dados.etapas, el)),
+    'editar-etapa': (el) => formEtapa(achar(atual().etapas, el)),
     'novo-registro': () => formRegistro(null),
-    'editar-registro': (el) => formRegistro(achar(E.dados.diario, el)),
+    'editar-registro': (el) => formRegistro(achar(atual().diario, el)),
 
     'editar-variavel': formVariavel,
     'novo-tratamento': () => formTratamento(null),
-    'editar-tratamento': (el) => formTratamento(achar(E.dados.resultados.tratamentos, el)),
-    'remover-medida': (el) => alterar((d) => { achar(d.resultados.tratamentos, el).medidas.splice(+el.dataset.i, 1); }, 'Medida removida.'),
+    'editar-tratamento': (el) => formTratamento(achar(atual().resultados.tratamentos, el)),
+    'remover-medida': (el) => {
+      const id = el.dataset.id;
+      const i = +el.dataset.i;
+      const valor = achar(atual().resultados.tratamentos, el).medidas[i];
+      alterar((d) => {
+        const medidas = d.resultados.tratamentos.find((t) => t.id === id).medidas;
+        const j = medidas[i] === valor ? i : medidas.indexOf(valor);
+        if (j >= 0) medidas.splice(j, 1);
+      }, 'Medida removida.', (d) => {
+        const t = d.resultados.tratamentos.find((x) => x.id === id);
+        if (t) t.medidas.splice(Math.min(i, t.medidas.length), 0, valor);
+      });
+    },
 
     'editar-projeto': () => abrirFolha({
-      titulo: 'Editar projeto', valores: E.dados.projeto, campos: CAMPOS_PROJETO,
+      titulo: 'Editar projeto', valores: atual().projeto, campos: CAMPOS_PROJETO,
       salvar: (v) => alterar((d) => Object.assign(d.projeto, v))
     }),
     'novo-membro': () => formMembro(null),
-    'editar-membro': (el) => formMembro(achar(E.dados.equipe, el)),
+    'editar-membro': (el) => formMembro(achar(atual().equipe, el)),
     'novo-material': () => formMaterial(null),
-    'editar-material': (el) => formMaterial(achar(E.dados.materiais, el)),
+    'editar-material': (el) => formMaterial(achar(atual().materiais, el)),
     'alternar-material': (el) => {
       focarDepois = `[data-acao="alternar-material"][data-id="${el.dataset.id}"]`;
       alterar((d) => { const m = achar(d.materiais, el); m.status = m.status === 'temos' ? 'falta' : 'temos'; });
     },
     'nova-referencia': () => formReferencia(null),
-    'editar-referencia': (el) => formReferencia(achar(E.dados.referencias, el))
+    'editar-referencia': (el) => formReferencia(achar(atual().referencias, el))
   };
+
+  /* Ações que qualquer pessoa pode usar. As demais alteram o projeto e pedem o código da turma. */
+  const SEM_CODIGO = new Set(['fechar-folha', 'exemplo', 'apagar-exemplo', 'baixar', 'filtrar-tarefas', 'usar-publicada', 'manter-minhas', 'digitar-codigo', 'sair-aparelho', 'tentar-de-novo']);
 
   document.addEventListener('click', (ev) => {
     const ponto = ev.target.closest('.ponto');
     if (ponto) { mostrarDica(ponto); return; }
     esconderDica();
     const el = ev.target.closest('[data-acao]');
-    if (el && ACOES[el.dataset.acao]) ACOES[el.dataset.acao](el);
+    if (!el || !ACOES[el.dataset.acao]) return;
+    if (SEM_CODIGO.has(el.dataset.acao)) ACOES[el.dataset.acao](el);
+    else comAcesso(() => ACOES[el.dataset.acao](el));
   });
   document.addEventListener('pointerover', (ev) => {
     if (ev.pointerType !== 'mouse') return;
@@ -1085,13 +1487,14 @@
       }
       const inicio = deISO(dadosForm.get('inicio')) ? dadosForm.get('inicio') : hojeISO();
       const plano = criarPlano(tema, inicio, String(dadosForm.get('turma') || '').trim().slice(0, 200));
-      E.dados = plano;
-      E.sujo = true;
-      E.editadoAposExportar = true;
-      salvar();
-      desenhar();
-      window.scrollTo(0, 0);
-      avisar('Plano criado. Revise a pergunta e as datas.');
+      comAcesso(() => {
+        alterar((d) => {
+          if (!projetoVazio(d)) throw new Error('o projeto já foi criado por outra pessoa');
+          return clone(plano);
+        });
+        window.scrollTo(0, 0);
+        avisar('Plano criado. Revise a pergunta e as datas.');
+      });
     }
     if (form.dataset.form === 'medida') {
       const campo = form.elements.valor;
@@ -1102,8 +1505,11 @@
         avisar('Digite só o número, por exemplo 12,5.');
         return;
       }
-      focarDepois = `form[data-id="${form.dataset.id}"] input`;
-      alterar((d) => { d.resultados.tratamentos.find((t) => t.id === form.dataset.id).medidas.push(valor); });
+      const id = form.dataset.id;
+      comAcesso(() => {
+        focarDepois = `form[data-id="${id}"] input`;
+        alterar((d) => { d.resultados.tratamentos.find((t) => t.id === id).medidas.push(valor); });
+      });
     }
   });
 
@@ -1120,6 +1526,10 @@
     relogioLargura = setTimeout(posicionarPontos, 150);
   });
 
-  desenhar();
-  verificarPublicado();
+  if (NUVEM) {
+    iniciarNuvem();
+  } else {
+    desenhar();
+    verificarPublicado();
+  }
 })();
